@@ -148,16 +148,16 @@ Select the above text, PopClip will offer an "Install Extension" action. Click i
 + Open link in the text, display only when a link is detected 打開文字中的鏈接，僅當檢測到鏈接時顯示
 ``` json
 {
-  "name": "打開文字中的鏈接",
+  "name": "Open link in text",
   "url": "%sr.replace(/(点|。)/g,\".\").replace(/[^\\s\\w\\-_\\.~!\\*';:@&=\\+\\$,\\/\\?#\\[\\]%]/g,\"\").replace(/https:\\/\\/pan\\.baidu\\.com\\/s\\//,\"\").replace(/.*([\\s:：]|^)(1[a-z_0-9]{22,})[\\s\\S]*?\\b([a-z0-9]{4}\\b|$).*/i,\"https://pan.baidu.com/s/$2?pwd=$3\").replace(/ /g,\"\").replace(/^/,\"http://\").replace(/^http:\\/\\/(https?:)/,\"$1\")",
-  "kwFilter": "\\w.*[\\.点。].*\\w|1[a-zA-Z0-9]{22,}"
+  "kwFilter": "\\w\\S*\\.\\S*\\w|\\w.*[点。].*\\w|1[a-zA-Z0-9]{22,}"
 }
 ```
 + Automatically send target text to other device like mobile phone 自動發送選中文字到手機
 ``` json
 {
-  "name": "發送到手機",
-  "url": "https://s.hoothin.com/#p{wait(x-peer)&call(document.querySelector('x-peer').dispatchEvent(new Event('contextmenu')))&#textInput=%s&click(#textInput+div>button)}"
+  "name": "Send to phone",
+  "url": "https://s.hoothin.com/#p{wait(x-peer)&rclick(x-peer)&#textInput=%s&click(#textInput+div>button)}"
 }
 ```
 + Split by line and paste into the current input box in order 按行分割後依次粘貼到當前輸入框
@@ -175,19 +175,11 @@ Select the above text, PopClip will offer an "Install Extension" action. Click i
   "kwFilter": "\\d\\$|\\$\\d"
 }
 ```
-+ Currency conversion of various countries 各國貨幣轉換 **javascript is effective only at userscript**
++ Currency conversion of various countries 各國貨幣轉換
 ``` json
 {
-  "name": "貨幣轉換",
-  "url": "javascript:fetch(`https://api.exchangerate.host/convert?from=%input{From currency/US Dollar/Euro/Japanese Yen/China Yuan,USD/EUR/JPY/CNY}&to=%input{Target currency/US Dollar/Euro/Japanese Yen/China Yuan,USD/EUR/JPY/CNY}&amount=%sr.replace(/\\D/g,\"\")`).then(r=>r.json()).then(r=>prompt(`${r.date} Exchange rate by the European Central Bank\\n${r.query.amount.toLocaleString()} ${r.query.from} =`,`${r.result.toLocaleString()} ${r.query.to}`)).catch(alert);"
-}
-```
-+ Miles to kilometers and show in tips 英里轉公里並顯示為 tips
-``` json
-{
-  "name": "📏 英里轉公里",
-  "url": "showTips:let s=\"%sr\".match(/(\\d+)(英里|英?哩|mi(le)?)/)[1];let km=(s*1.609344).toFixed(2);return `<i>${s} mi = ${km} km</i>`;",
-  "kwFilter": "\\d+\\s*(英里|英?哩|mi(le)?\\b)"
+  "name": "💲Currency convert",
+  "url": "showTips:http://apilayer.net/api/convert?from=%input{From currency/US Dollar/Euro/Japanese Yen/China Yuan,USD/EUR/JPY/CNY}&to=%input{Target currency/US Dollar/Euro/Japanese Yen/China Yuan,USD/EUR/JPY/CNY}&amount=1&access_key=%template{apilayer key}\n{name}<br/><i>%s {json.query.from} = {json.result|*%s.replace(/\\D/,'')} {json.query.to}</i>"
 }
 ```
 + Preview Japan AV 框選番號預覽AV such as ABW-345
@@ -201,8 +193,17 @@ Select the above text, PopClip will offer an "Install Extension" action. Click i
 + Show Romaji of japanese 顯示日語對應羅馬音/羅馬字
 ``` json
 {
-  "name": "🗻 日語羅馬字",
-  "url": "showTips:https://translate.googleapis.com/translate_a/single?client=gtx&dt=t&dt=bd&dj=1&dt=ex&dt=ld&dt=md&dt=qca&dt=rw&dt=rm&dt=ss&dt=at&sl=ja&tl=zh_CN&q=%sr\n<h3>{name}</h3>\n{json.sentences.0.trans}\n<br>\n<font color='yellow'>{json.sentences.1.src_translit}</font>"
+    "name": "🗻 Japanese romaji",
+    "url": "showTips:https://translate.googleapis.com/translate_a/single%p{client=gtx&dt=t&dt=bd&dj=1&dt=ex&dt=ld&dt=md&dt=qca&dt=rw&dt=rm&dt=ss&dt=at&sl=ja&tl=zh_CN&q=%s}\n<h3 style='margin: 0;'>{name}</h3>\n{json.sentences.all.trans}\n<br>\n<font style='display: block;' color='antiquewhite'>{json.sentences.all.orig}</font>\n<font style='display: block;' color='yellow'>{json.sentences.-1.src_translit}</font>\n<span style=\"cursor:pointer;color:#f9690e;\" data-read=\"%sr.replace(/\"/g,\"&quot;\")\" data-lang=\"ja\" data-rate=\"1\" data-volume=\"1\">🔈Read</span>",
+    "kwFilter": "[\\u3040-\\u309F\\u30A0-\\u30FF]"
+}
+```
++ Convert miles and kilometers 轉換英哩與公里
+``` json
+{
+  "name": "📏 Mile to km",
+  "url": "showTips:\n<i>%sr.replace(/(\\d+)(英里|英?哩|mi(le)?)/,\"$1\") mi = {%sr.replace(/(\\d+)(英里|英?哩|mi(le)?)/,\"$1\")*1.609344} km</i>",
+  "kwFilter": "\\d+\\s*(英里|英?哩|mi(le)?\\b)"
 }
 ```
 
@@ -448,3 +449,7 @@ users:
 ![i](assets/batchOpen3.jpg)
 
  </details>
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=hoothin/SearchJumper&type=Date)](https://star-history.com/#hoothin/SearchJumper&Date)

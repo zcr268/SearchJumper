@@ -457,12 +457,14 @@ class ChildSiteIcons extends React.Component {
                 console.log(e);
             }
         }
+        let icon = "";
+        
         if (site.icon) {
-            return site.icon;
+            icon = site.icon;
         } else if (/^(showTips:)?https?:/.test(site.url)) {
-            return site.url.replace(new RegExp('^(showTips:)?(https?://[^/]*/)[\\s\\S]*$'), "$2favicon.ico");
+            icon = site.url.replace(new RegExp('^(showTips:)?(https?://[^/]*/)[\\s\\S]*$'), "$2favicon.ico");
         }
-        return "";
+        return (/^http/.test(icon) && window.cacheIcon[icon]) || icon;
     }
 
     dragOver(e) {
@@ -1578,7 +1580,7 @@ function forwordToSite(inputWord) {
     let typeIndex = window.searchData.sitesConfig.findIndex((data, index) => {
         if (filterGroup) return inputWord === data.type;
         return data.sites.findIndex((site, i) => {
-            if (site.name === inputWord || site.url === inputWord) {
+            if (site.name === inputWord || site.url.replace(/\n/g, "") === inputWord) {
                 filterEngineName = site.name;
                 return true;
             }
@@ -1635,11 +1637,13 @@ export default function Engines() {
       createData('paste', window.i18n('param_paste')),
       createData('showTips', window.i18n('param_showTips')),
       createData('find', window.i18n('param_find')),
-      createData('find.addto()', window.i18n('param_findadd')),
-      createData('javascript', window.i18n('javascript'))
+      createData('find.addto()', window.i18n('param_findadd'))      
     ];
-    if (/^(http|ftp)/i.test(window.location.protocol) && window.lang.indexOf("zh") === 0) {
-        rows.splice(4, 0, createData('%ss', window.i18n('param_ss')), createData('%st', window.i18n('param_st')));
+    if (/^(http|ftp)/i.test(window.location.protocol)) {
+        if (window.lang.indexOf("zh") === 0) {
+            rows.splice(4, 0, createData('%ss', window.i18n('param_ss')), createData('%st', window.i18n('param_st')));
+        }
+        rows.push(createData('javascript', window.i18n('javascript')));
     }
     let selectTxt = -1, selectImg = -1, selectLink = -1, selectPage = -1, selectAll = -1;
     for (let i = 0; i < window.searchData.sitesConfig.length; i++) {
@@ -1961,7 +1965,7 @@ export default function Engines() {
                                 onDragLeave={e => {hideDragLine()}}
                                 icon={
                                     /^(http|data:)/.test(data.icon)?(
-                                        <img alt={data.type} src={data.icon} style={{m:1, background: 'darkgray', borderRadius: '35px', width: '65px', height: '65px', padding: '15px', boxSizing: 'border-box'}} />
+                                        <img alt={data.type} src={(/^http/.test(data.icon) && window.cacheIcon[data.icon]) || data.icon} style={{m:1, background: 'darkgray', borderRadius: '35px', width: '65px', height: '65px', padding: '15px', boxSizing: 'border-box'}} />
                                     ):(
                                         <i style={{background: 'darkgray', lineHeight: '65px', width: '65px', height: '65px', fontSize: '30px', color: 'white', borderRadius: '35px'}} className={`${/^fa/.test(data.icon) ? data.icon : "fa fa-" + data.icon}`}>{data.icon ? '' : data.type}</i>
                                     )} 
@@ -2048,7 +2052,7 @@ export default function Engines() {
                                             option.value = site.name;
                                             list.appendChild(option);
                                         }
-                                    } else if (site.url.indexOf(inputWordLc) !== -1) {
+                                    } else if (site.url.length < 1000 && site.url.indexOf(inputWordLc) !== -1) {
                                         if (site.url !== inputWord) {
                                             let option = document.createElement('option');
                                             option.value = site.url;
