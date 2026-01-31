@@ -813,8 +813,117 @@
         var isInConfigPage = false;
         var lastRequestUrl;
 
-        function createHTML(html = "") {
-            return escapeHTMLPolicy ? escapeHTMLPolicy.createHTML(html) : html;
+        function createHTML(html = "", doc) {
+            const targetDoc = doc || document;
+            const fragment = targetDoc.createDocumentFragment();
+            if (html === null || html === undefined || html === '') return fragment;
+            parseHTMLToFragment(String(html), fragment, targetDoc);
+            return fragment;
+        }
+        const SVG_NS = 'http://www.w3.org/2000/svg';
+        const VOID_TAGS = {
+            area: true,
+            base: true,
+            br: true,
+            col: true,
+            embed: true,
+            hr: true,
+            img: true,
+            input: true,
+            link: true,
+            meta: true,
+            param: true,
+            source: true,
+            track: true,
+            wbr: true
+        };
+        const HTML_ENTITIES = {
+            amp: '&',
+            lt: '<',
+            gt: '>',
+            quot: '"',
+            apos: "'",
+            nbsp: '\u00A0'
+        };
+        function decodeEntities(text) {
+            return text.replace(/&(#x?[0-9a-fA-F]+|[a-zA-Z]+);/g, function(_, code) {
+                if (code[0] === '#') {
+                    const isHex = code[1] === 'x' || code[1] === 'X';
+                    const num = parseInt(code.slice(isHex ? 2 : 1), isHex ? 16 : 10);
+                    if (!isNaN(num)) {
+                        try { return String.fromCodePoint(num); } catch(e) {}
+                    }
+                    return '&' + code + ';';
+                }
+                const key = code.toLowerCase();
+                return (key in HTML_ENTITIES) ? HTML_ENTITIES[key] : '&' + code + ';';
+            });
+        }
+        function parseHTMLToFragment(html, fragment, doc) {
+            const stack = [fragment];
+            const tokenRe = /<!--[\s\S]*?-->|<\/?[a-zA-Z][^>]*>|[^<]+/g;
+            let match;
+            while ((match = tokenRe.exec(html))) {
+                const token = match[0];
+                if (token[0] !== '<') {
+                    const text = decodeEntities(token);
+                    if (text) stack[stack.length - 1].appendChild(doc.createTextNode(text));
+                    continue;
+                }
+                if (token.indexOf('<!--') === 0) {
+                    continue;
+                }
+                if (token[1] === '/') {
+                    const tag = token.slice(2, -1).trim().toLowerCase();
+                    for (let i = stack.length - 1; i > 0; i--) {
+                        const node = stack[i];
+                        if (node.nodeType === 1 && node.nodeName.toLowerCase() === tag) {
+                            stack.length = i;
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                const tagMatch = /^<\s*([^\s/>]+)/.exec(token);
+                if (!tagMatch) continue;
+                const rawName = tagMatch[1];
+                const tagName = rawName.toLowerCase();
+                const parent = stack[stack.length - 1];
+                const parentIsSvg = parent.nodeType === 1 && parent.namespaceURI === SVG_NS;
+                const isSvg = parentIsSvg || tagName === 'svg';
+                const el = isSvg ? doc.createElementNS(SVG_NS, rawName) : doc.createElement(tagName);
+                const attrPart = token.replace(/^<\s*[^\s/>]+/, '').replace(/\/?>$/, '');
+                if (attrPart) {
+                    const attrRe = /([^\s=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
+                    let attrMatch;
+                    while ((attrMatch = attrRe.exec(attrPart))) {
+                        const name = attrMatch[1];
+                        const value = decodeEntities(attrMatch[2] || attrMatch[3] || attrMatch[4] || '');
+                        el.setAttribute(name, value);
+                    }
+                }
+                parent.appendChild(el);
+                const selfClosing = token.endsWith('/>');
+                if (!selfClosing && !VOID_TAGS[tagName]) {
+                    stack.push(el);
+                }
+            }
+        }
+        function setHTML(target, html, doc) {
+            if (!target) return;
+            const targetDoc = doc || target.ownerDocument || document;
+            const fragment = createHTML(html, targetDoc);
+            while (target.firstChild) {
+                target.removeChild(target.firstChild);
+            }
+            target.appendChild(fragment);
+        }
+        function replaceOuterHTML(target, html, doc) {
+            if (!target || !target.parentNode) return;
+            const targetDoc = doc || target.ownerDocument || document;
+            const fragment = createHTML(html, targetDoc);
+            target.parentNode.insertBefore(fragment, target);
+            target.parentNode.removeChild(target);
         }
 
         var _GM_xmlhttpRequest, _GM_registerMenuCommand, _GM_notification, _GM_setClipboard, _GM_openInTab, _GM_addStyle, _GM_info, GM_fetch;
@@ -834,7 +943,7 @@
                 return response.text();
             }).then(data => {
                 let doc = document.implementation.createHTMLDocument('');
-                doc.documentElement.innerHTML = createHTML(data);
+                setHTML(doc.documentElement, data, doc);
                 f.onload && f.onload({status: res.status, response: data, responseXML: doc})
             }).catch(e => f.onerror && f.onerror(e))};
         }
@@ -984,7 +1093,7 @@
                 return GM_addStyle(cssStr);
             } else {
                 let styleEle = document.createElement("style");
-                styleEle.innerHTML = createHTML(cssStr);
+                setHTML(styleEle, cssStr);
                 document.head.appendChild(styleEle);
                 return styleEle;
             }
@@ -1230,140 +1339,6 @@
             await webDAV.write("inPageRule.json", JSON.stringify(searchData.prefConfig.inPageRule));
         }
 
-
-
-
-
-        function parseTrustedTypes(cspString) {
-            const policies = new Set();
-            let allowDuplicates = false;
-            let ttDirectiveFound = false;
-            const ttRegex = /trusted-types\s+([^;]+)/gi;
-            let match;
-
-            while ((match = ttRegex.exec(cspString)) !== null) {
-                ttDirectiveFound = true;
-
-                const policyNames = match[1].trim().split(/\s+/);
-                for (const name of policyNames) {
-                    if (name === "'allow-duplicates'") {
-                        allowDuplicates = true;
-                    } else if (name !== "'none'") {
-                        policies.add(name.replace(/'/g, ''));
-                    }
-                }
-            }
-            return { names: policies, allowDuplicates: allowDuplicates, ttDirectiveFound: ttDirectiveFound };
-        }
-
-        async function getCspTrustedTypesInfo() {
-            const combinedPolicies = new Set();
-            let combinedAllowDuplicates = false;
-            let combinedTtDirectiveFound = false;
-
-            const meta = document.querySelector('meta[http-equiv="Content-Security-Policy"]');
-            if (meta) {
-                const metaResult = parseTrustedTypes(meta.content);
-                metaResult.names.forEach(name => combinedPolicies.add(name));
-                if (metaResult.allowDuplicates) {
-                    combinedAllowDuplicates = true;
-                }
-                if (metaResult.ttDirectiveFound) {
-                    combinedTtDirectiveFound = true;
-                }
-            }
-
-            return new Promise((resolve) => {
-                GM_xmlhttpRequest({
-                    method: "HEAD",
-                    url: window.location.href,
-                    onload: function(response) {
-                        const cspHeader = response.responseHeaders.split('\r\n')
-                        .filter(h => h.toLowerCase().startsWith('content-security-policy:'))
-                        .map(h => h.substring(26).trim())
-                        .join('; ');
-
-                        const headerResult = parseTrustedTypes(cspHeader);
-                        headerResult.names.forEach(name => combinedPolicies.add(name));
-                        if (headerResult.allowDuplicates) {
-                            combinedAllowDuplicates = true;
-                        }
-                        if (headerResult.ttDirectiveFound) {
-                            combinedTtDirectiveFound = true;
-                        }
-
-                        resolve({
-                            names: combinedPolicies,
-                            allowDuplicates: combinedAllowDuplicates,
-                            ttDirectiveFound: combinedTtDirectiveFound
-                        });
-                    },
-                    onerror: function(error) {
-                        resolve({
-                            names: combinedPolicies,
-                            allowDuplicates: combinedAllowDuplicates,
-                            ttDirectiveFound: combinedTtDirectiveFound
-                        });
-                    }
-                });
-            });
-        }
-
-        function isTrustedTypesEnforced() {
-            try {
-                document.createElement('div').innerHTML = '';
-                return false;
-            } catch (e) {
-                return true;
-            }
-        }
-
-        async function createPolicy() {
-            if (!(_unsafeWindow.trustedTypes && _unsafeWindow.trustedTypes.createPolicy && isTrustedTypesEnforced())) {
-                return;
-            }
-
-            const { names: allowedNames, allowDuplicates, ttDirectiveFound } = await getCspTrustedTypesInfo();
-
-            if (ttDirectiveFound && !allowDuplicates) {
-                debug("CSP Trusted Types is enforced without 'allow-duplicates'. " +
-                      "Skipping policy creation to avoid conflicts with the page.");
-                return;
-            }
-
-            const MY_POLICY_NAME = 'pvcep_default';
-
-            try {
-                escapeHTMLPolicy = _unsafeWindow.trustedTypes.createPolicy(MY_POLICY_NAME, {
-                    createHTML: (string, sink) => string,
-                    createScriptURL: string => string,
-                    createScript: string => string
-                });
-                return;
-            } catch (e) {
-            }
-
-            const existingPolicies = new Set(_unsafeWindow.trustedTypes.getPolicyNames());
-            for (const name of allowedNames) {
-                if (name === '*' || existingPolicies.has(name)) {
-                    continue;
-                }
-
-                try {
-                    escapeHTMLPolicy = _unsafeWindow.trustedTypes.createPolicy(name, {
-                        createHTML: (string, sink) => string,
-                        createScriptURL: string => string,
-                        createScript: string => string
-                    });
-                    return;
-                } catch (e) {
-                    debug(`create '${name}' failed, trying next...`);
-                }
-            }
-            debug("Could not create any trusted types policy.");
-        }
-
-        var escapeHTMLPolicy;
         const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
 
         if (typeof String.prototype.replaceAll != 'function') {
@@ -4198,7 +4173,7 @@
                 let logoCon = document.createElement("span");
                 logoCon.className = "search-jumper-logo";
                 logoBtn = document.createElement("span");
-                logoBtn.innerHTML = createHTML(logoBtnSvg);
+                setHTML(logoBtn, logoBtnSvg);
                 logoBtn.className = "search-jumper-btn";
                 logoCon.addEventListener('mouseenter', e => {
                     if (this.preList) {
@@ -4269,7 +4244,7 @@
 
                 this.modeSwitch = document.createElement("div");
                 this.modeSwitch.className = "modeSwitch";
-                this.modeSwitch.innerHTML = createHTML(`<svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg" version="1.1"><rect height="450" width="520" y="287" x="253" fill="#fff"></rect><path d="m511.8,64.2c-247.5,0 -448.2,200.7 -448.2,448.2s200.7,448.2 448.2,448.2s448.2,-200.6 448.2,-448.2s-200.7,-448.2 -448.2,-448.2zm-260.4,353.9c0,-7.8 6.3,-14.2 14.2,-14.2l315.6,0l0,-102.5c0,-12.3 14.7,-18.8 23.7,-10.4l165.1,151.7c9.5,8.7 3.3,24.6 -9.6,24.6l-495,0c-7.8,0 -14.2,-6.3 -14.2,-14.2l0,-35l0.2,0zm523.2,188.5c0,7.8 -6.3,14.2 -14.2,14.2l-315.5,0l0,102.6c0,12.3 -14.7,18.8 -23.7,10.4l-165.2,-151.8c-9.5,-8.7 -3.3,-24.6 9.6,-24.6l495,0c7.8,0 14.2,6.3 14.2,14.2l0,35l-0.2,0z"></path></svg>`);
+                setHTML(this.modeSwitch, `<svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg" version="1.1"><rect height="450" width="520" y="287" x="253" fill="#fff"></rect><path d="m511.8,64.2c-247.5,0 -448.2,200.7 -448.2,448.2s200.7,448.2 448.2,448.2s448.2,-200.6 448.2,-448.2s-200.7,-448.2 -448.2,-448.2zm-260.4,353.9c0,-7.8 6.3,-14.2 14.2,-14.2l315.6,0l0,-102.5c0,-12.3 14.7,-18.8 23.7,-10.4l165.1,151.7c9.5,8.7 3.3,24.6 -9.6,24.6l-495,0c-7.8,0 -14.2,-6.3 -14.2,-14.2l0,-35l0.2,0zm523.2,188.5c0,7.8 -6.3,14.2 -14.2,14.2l-315.5,0l0,102.6c0,12.3 -14.7,18.8 -23.7,10.4l-165.2,-151.8c-9.5,-8.7 -3.3,-24.6 9.6,-24.6l495,0c7.8,0 14.2,6.3 14.2,14.2l0,35l-0.2,0z"></path></svg>`);
                 alllist.appendChild(this.modeSwitch);
                 this.modeSwitch.addEventListener("click", e => {
                     e.preventDefault();
@@ -4343,7 +4318,7 @@
 
 
                 let logoConfigBtn = document.createElement("span");
-                logoConfigBtn.innerHTML = createHTML(logoBtnSvg);
+                setHTML(logoConfigBtn, logoBtnSvg);
                 logoConfigBtn.className = "search-jumper-btn";
                 logoConfigBtn.addEventListener('click', e => {
                     _GM_openInTab(configPage, {active: true, insert: true});
@@ -4455,7 +4430,7 @@
                     if (typeof dataset.close !== 'undefined') {
                         self.tips.style.opacity = 0;
                         self.tips.style.display = "none";
-                        self.tips.innerHTML = createHTML("");
+                        setHTML(self.tips, "");
                     }
                 }, false);
                 let startMouse, startPos, mouseMoveHandler = e => {
@@ -4519,7 +4494,7 @@
                 let searchJumperNavBar = document.createElement("div");
                 searchJumperNavBar.className = "searchJumperNavBar";
                 searchJumperNavBar.style.display = "none";
-                searchJumperNavBar.innerHTML = createHTML(`
+                setHTML(searchJumperNavBar, `
                   <svg class="closeNavBtn" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg"><title>Close navigation</title>${closePath}</svg>
                   <div class="minNavBtn" title="Minimize navigation">-</div>
                   <div id="navMarks"></div>
@@ -4531,7 +4506,7 @@
                 let searchJumperExpand = document.createElement("span");
                 searchJumperExpand.title = i18n('expand');
                 searchJumperExpand.className = "searchJumperExpand search-jumper-btn";
-                searchJumperExpand.innerHTML = createHTML(`
+                setHTML(searchJumperExpand, `
                 <svg viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg"><rect height="450" width="600" y="300" x="200" fill="#fff"></rect><path d="M512 64C264.8 64 64 264.8 64 512s200.8 448 448 448 448-200.8 448-448S759.2 64 512 64z m0 640L240 432l45.6-45.6L512 613.6l226.4-226.4 45.6 45.6L512 704z"></path></svg>
                 `);
                 this.searchJumperExpand = searchJumperExpand;
@@ -4546,7 +4521,7 @@
 
                 let searchInputDiv = document.createElement("div");
                 searchInputDiv.className = "search-jumper-input";
-                searchInputDiv.innerHTML = createHTML(`<span class="closeBtn">×</span>
+                setHTML(searchInputDiv, `<span class="closeBtn">×</span>
                 <input type="radio" id="filterSitesTab" name="tab" ${searchData.prefConfig.defaultFindTab? "" : "checked=\"checked\""} />
                 <label for="filterSitesTab">${i18n("filterSites")}</label>
                 <input type="radio" id="searchInPageTab" name="tab" ${searchData.prefConfig.defaultFindTab? "checked=\"checked\"" : ""} />
@@ -4795,14 +4770,14 @@
                     this.lockWords += (this.lockWords.indexOf(this.splitSep) === this.lockWords.length - this.splitSep.length ? "" : this.splitSep) + words;
                 } else this.lockWords = words;
                 if (!this.splitSep) {
-                    this.searchInPageLockWords.innerHTML = createHTML();
+                    setHTML(this.searchInPageLockWords, "");
                     this.highlight("");
                 }
                 this.highlight(targetWords);
                 targetWords.forEach(word => {
                     if (!word) return;
                     let wordSpan = document.createElement("span");
-                    wordSpan.innerHTML = createHTML(word.showWords);
+                    setHTML(wordSpan, word.showWords);
                     wordSpan.title = word.title ? JSON.parse('"' + word.title + '"') : word.showWords;
                     let background = word.style.match(/background: *(#?\w+)/);
                     if (background && background[1].indexOf('unset') === -1) wordSpan.style.background = background[1];
@@ -4882,7 +4857,7 @@
                         this.removeHighlightWord(word);
                     });
                     removeBtn.className = "lockWordTool";
-                    removeBtn.innerHTML = createHTML(`<span title="${i18n("removeBtn")}">×</span>`);
+                    setHTML(removeBtn, `<span title="${i18n("removeBtn")}">×</span>`);
                     wordSpan.appendChild(removeBtn);
 
                     let modifyBtn = document.createElement("div");
@@ -4895,7 +4870,7 @@
                         this.showModifyWindow(word, wordSpan);
                     });
                     modifyBtn.className = "lockWordTool modifyBtn";
-                    modifyBtn.innerHTML = createHTML(`<span>+</span>`);
+                    setHTML(modifyBtn, `<span>+</span>`);
                     wordSpan.appendChild(modifyBtn);
 
                     let curList = this.marks[word.showWords];
@@ -5124,7 +5099,7 @@
                         let customInputCssEle = _GM_addStyle(customInputCssText);
                         let customInputFrame = document.createElement("div");
                         this.customInputFrame = customInputFrame;
-                        customInputFrame.innerHTML = createHTML(`
+                        setHTML(customInputFrame, `
                          <div class="customInputFrame-body">
                              <a href="${homePage}" class="customInputFrame-title" target="_blank">
                                  <img width="32px" height="32px" src="${logoBase64}" />${i18n("customInputFrame")}
@@ -5174,7 +5149,7 @@
                     if (this.customInputFrame.parentNode) {
                         this.customInputFrame.parentNode.removeChild(this.customInputFrame);
                     }
-                    this.customGroup.innerHTML = createHTML();
+                    setHTML(this.customGroup, "");
                     let tempUrl = url;
                     let inputMatch = tempUrl.match(/%input{(.*?[^\\])}/);
                     let index = 0;
@@ -5227,7 +5202,7 @@
 
                             let option = document.createElement("p");
                             option.setAttribute("value", "");
-                            option.innerHTML = createHTML('<b>Select option</b>');
+                            setHTML(option, '<b>Select option</b>');
                             options.appendChild(option);
                             option.addEventListener("click", e => {
                                 options.style.visibility = "hidden";
@@ -5432,7 +5407,7 @@
                     let modifyFrame = document.createElement("div");
                     this.modifyFrame = modifyFrame;
                     modifyFrame.id = "searchJumperModifyWord";
-                    modifyFrame.innerHTML = createHTML(`
+                    setHTML(modifyFrame, `
                      <div class="searchJumperModify-body">
                          <a href="${homePage}" class="searchJumperModify-title" target="_blank">
                              <img onerror="this.style.display='none'" width="32px" height="32px" src="${logoBase64}" />${i18n("modifyWord")}
@@ -5645,7 +5620,7 @@
                                 if (parent) {
                                     parent.dataset.content = word.showWords;
                                     parent.classList.add("searchJumper-hide");
-                                    parent.innerHTML = createHTML("");
+                                    setHTML(parent, "");
                                 }
                             }
                         }
@@ -5724,7 +5699,7 @@
             }
 
             emptyInPageWords() {
-                this.searchInPageLockWords.innerHTML = createHTML();
+                setHTML(this.searchInPageLockWords, "");
                 this.highlight("");
             }
 
@@ -5865,7 +5840,7 @@
                         if (!e.dataset.type) len++;
                     });
                 }
-                numEle.innerHTML = createHTML("[" + index + "/" + len + "]");
+                setHTML(numEle, "[" + index + "/" + len + "]");
             }
 
             getHighlightStyle(index, background, addCssText) {
@@ -6255,7 +6230,7 @@
                         hide.style.display = "";
                         hide.removeAttribute('data-content');
                     });
-                    this.navMarks.innerHTML = createHTML();
+                    setHTML(this.navMarks, "");
                     this.marks = {};
                     this.curHighlightWords = [];
                     return;
@@ -6395,7 +6370,7 @@
                                         parent = parent.parentElement;
                                     }
                                     if (parent && parent.classList && !parent.classList.contains("searchJumper-hide")) {
-                                        parent.innerHTML = createHTML("");
+                                        setHTML(parent, "");
                                         parent.dataset.content = word.showWords;
                                         parent.classList.add("searchJumper-hide");
                                     }
@@ -6479,7 +6454,7 @@
                                         parent = parent.parentElement;
                                     }
                                     if (parent) {
-                                        parent.innerHTML = createHTML("");
+                                        setHTML(parent, "");
                                         parent.dataset.content = word.showWords;
                                         parent.classList.add("searchJumper-hide");
                                         return 0;
@@ -6629,7 +6604,7 @@
                                             parent = parent.parentElement;
                                         }
                                         if (parent) {
-                                            parent.innerHTML = createHTML("");
+                                            setHTML(parent, "");
                                             parent.dataset.content = word.showWords;
                                             parent.classList.add("searchJumper-hide");
                                             return 0;
@@ -6759,7 +6734,7 @@
             refreshPageWords(newWords) {
                 this.lockWords = "";
                 this.searchJumperInPageInput.value = "";
-                this.searchInPageLockWords.innerHTML = createHTML();
+                setHTML(this.searchInPageLockWords, "");
                 this.searchJumperInPageInput.style.paddingLeft = "";
                 this.submitInPageWords();
                 let words = newWords || globalInPageWords;
@@ -6847,7 +6822,7 @@
                 this.con.classList.remove("search-jumper-showall");
                 document.documentElement.style.scrollbarWidth = this.preScrollbarWidth;
                 this.searchJumperInputKeyWords.value = "";
-                this.historylist.innerHTML = createHTML();
+                setHTML(this.historylist, "");
                 /*this.historySiteBtns.slice(0, 10).forEach(btn => {
                     this.siteBtnReturnHome(btn);
                 });*/
@@ -6885,7 +6860,7 @@
                 this.con.style.display = "";
                 this.clearInputHide();
                 this.alllist.appendChild(this.filterSites);
-                this.filterGlob.innerHTML = createHTML();
+                setHTML(this.filterGlob, "");
                 let self = this;
                 let kw = this.tileInput.value;
                 this.setFuncKeyCall(false);
@@ -6912,7 +6887,7 @@
                         dayLabelStr = dayLabelStr + "<br/>" + lunarStr;
                     }
                 }
-                self.dayInAll.innerHTML = createHTML(dayLabelStr);
+                setHTML(self.dayInAll, dayLabelStr);
                 let setTimeLabel = () => {
                     let now = new Date();
                     let hour = now.getHours(), minute = now.getMinutes(), seconds = now.getSeconds();
@@ -7176,7 +7151,7 @@
                         shadow.style.display = "none";
                         shadow.setAttribute('contenteditable', 'false');
                         let hideShadowStyle = document.createElement("style");
-                        hideShadowStyle.innerHTML = createHTML("#search-jumper-root{display: block!important;}");
+                        setHTML(hideShadowStyle, "#search-jumper-root{display: block!important;}");
                         shadow.appendChild(hideShadowStyle);
                         shadowRoot.appendChild(shadow);
                         this.shadowRoot = shadow;
@@ -7394,7 +7369,7 @@
                     if (this.searchJumperInPageInput.value) words += this.splitSep + this.searchJumperInPageInput.value;
                     this.lockWords = "";
                     this.searchJumperInPageInput.value = words;
-                    this.searchInPageLockWords.innerHTML = createHTML();
+                    setHTML(this.searchInPageLockWords, "");
                     this.searchJumperInPageInput.style.paddingLeft = "";
                 };
                 document.addEventListener("keydown", e => {
@@ -7408,7 +7383,7 @@
                             this.highlight("");
                             this.searchJumperInPageInput.value = this.lockWords;
                             this.lockWords = "";
-                            this.searchInPageLockWords.innerHTML = createHTML();
+                            setHTML(this.searchInPageLockWords, "");
                             this.setNav(false, true);
                         } else if (this.funcKeyCall) {
                             this.removeBar();
@@ -7508,7 +7483,7 @@
                     this.recoverBtn.addEventListener("click", e => {
                         this.lockWords = "";
                         this.searchJumperInPageInput.value = globalInPageWords;
-                        this.searchInPageLockWords.innerHTML = createHTML();
+                        setHTML(this.searchInPageLockWords, "");
                         this.highlight("");
                         this.submitInPageWords();
                         this.searchJumperInPageInput.focus();
@@ -7555,7 +7530,7 @@
                 this.emptyBtn.addEventListener("click", e => {
                     this.lockWords = "";
                     this.searchJumperInPageInput.value = "";
-                    this.searchInPageLockWords.innerHTML = createHTML();
+                    setHTML(this.searchInPageLockWords, "");
                     this.searchJumperInPageInput.style.paddingLeft = "";
                     this.submitInPageWords();
                     this.searchJumperInPageInput.focus();
@@ -7573,7 +7548,7 @@
                     if (this.lockWords) {
                         this.searchJumperInPageInput.value = this.lockWords || "";
                         this.lockWords = "";
-                        this.searchInPageLockWords.innerHTML = createHTML();
+                        setHTML(this.searchInPageLockWords, "");
                         this.searchJumperInPageInput.style.paddingLeft = "";
                         this.highlight("");
                         this.searchJumperInPageInput.focus();
@@ -7599,7 +7574,7 @@
                         if (this.searchJumperInPageInput.value) words += this.splitSep + this.searchJumperInPageInput.value;
                         this.lockWords = "";
                         this.searchJumperInPageInput.value = words;
-                        this.searchInPageLockWords.innerHTML = createHTML();
+                        setHTML(this.searchInPageLockWords, "");
                         this.searchJumperInPageInput.style.paddingLeft = "";
                     }
                 });
@@ -7880,7 +7855,7 @@
                         self.highlight("");
                         self.searchJumperInPageInput.value = self.lockWords || "";
                         self.lockWords = "";
-                        self.searchInPageLockWords.innerHTML = createHTML();
+                        setHTML(self.searchInPageLockWords, "");
                         self.setNav(false, true);
                     }
                 });
@@ -8171,7 +8146,7 @@
 
             buildAllPageGroupTab() {
                 let self = this;
-                this.groupTab.innerHTML = createHTML();
+                setHTML(this.groupTab, "");
                 searchTypes.forEach(type => {
                     if (type.classList.contains("notmatch")) return;
                     let typeName = type.dataset.type;
@@ -8241,7 +8216,7 @@
                     self.bar.classList.remove("initShow");
                     self.tips.style.opacity = 0;
                     self.tips.style.display = "none";
-                    self.tips.innerHTML = createHTML("");
+                    setHTML(self.tips, "");
                     //self.recoveHistory();
                     if (self.funcKeyCall) {
                         self.setFuncKeyCall(false);
@@ -8449,7 +8424,7 @@
 
             getSuggest(searchWords) {
                 let suggestDatalist = this.suggestDatalist;
-                suggestDatalist.innerHTML = createHTML();
+                setHTML(suggestDatalist, "");
                 if (!searchWords) return;
                 let requestSuggest = (api, cb, charset) => {
                     _GM_xmlhttpRequest({
@@ -8560,7 +8535,7 @@
                     type.classList.add("input-hide");
                 });
                 let optionNum = 0;
-                this.filterGlob.innerHTML = createHTML();
+                setHTML(this.filterGlob, "");
                 this.allSiteBtns.forEach(arr => {
                     let btn = arr[0];
                     let data = arr[1];
@@ -9358,7 +9333,7 @@
             }
 
             tipsPos(ele, type, inputGroup) {
-                this.tips.innerHTML = createHTML(type);
+                setHTML(this.tips, type);
                 let complexTipsCon = this.tips.querySelector('div');
                 if (complexTipsCon && !this.tips.querySelector('[data-close]')) {
                     let closeBtn = document.createElement('span');
@@ -9388,7 +9363,7 @@
                 [].forEach.call(this.tips.querySelectorAll('iframe'), iframe => {
                     let html = iframe.innerHTML;
                     if (html) {
-                        iframe.innerHTML = createHTML();
+                        setHTML(iframe, "");
                         if (iframe.src) {
                             iframe.addEventListener('load', e => {
                                 try {
@@ -9396,7 +9371,7 @@
                                     let doc = iframe.contentDocument || iframe.contentWindow.document;
                                     let div = doc.createElement('div');
                                     doc.body.appendChild(div);
-                                    div.outerHTML = createHTML(html);
+                                    replaceOuterHTML(div, html, doc);
                                 } catch(e) {}
                             });
                         } else {
@@ -9419,7 +9394,7 @@
                         self.md = window.markdownit();
                     }
                     [].forEach.call(this.tips.querySelectorAll('.markdown'), markdown => {
-                        markdown.innerHTML = createHTML(self.md.render(markdown.innerHTML));
+                        setHTML(markdown, self.md.render(markdown.innerHTML));
                     });
                 }
             }
@@ -10741,7 +10716,7 @@
                                                 newNode = document.createTextNode(innerText);
                                             } else {
                                                 newNode = document.createElement("pre");
-                                                newNode.innerHTML = createHTML(innerText);
+                                                setHTML(newNode, innerText);
                                             }
                                             a.parentNode.replaceChild(newNode, a);
                                         });
@@ -11927,7 +11902,7 @@
 
                         let option = document.createElement("p");
                         option.setAttribute("value", "");
-                        option.innerHTML = createHTML('<b>Select option</b>');
+                        setHTML(option, '<b>Select option</b>');
                         options.appendChild(option);
                         option.addEventListener("click", e => {
                             options.style.visibility = "hidden";
@@ -11983,7 +11958,7 @@
                 if (group.children.length) {
                     let searchBtn = document.createElement('div');
                     searchBtn.className = 'searchBtn';
-                    searchBtn.innerHTML = createHTML(searchSvg);
+                    setHTML(searchBtn, searchSvg);
                     searchBtn.addEventListener("click", e => {
                         geneFinalUrl();
                     });
@@ -12252,7 +12227,7 @@
                                         let thenEleSel = thenEleSelArr.shift();
                                         let thenUrl = await fetchData.then(r => {
                                             let doc = document.implementation.createHTMLDocument('');
-                                            doc.documentElement.innerHTML = createHTML(r);
+                                            setHTML(doc.documentElement, r, doc);
                                             let ele = getElement(thenEleSel, doc);
                                             if (!ele) return null;
                                             let basepath = doc.querySelector("base");
@@ -12279,7 +12254,7 @@
                                         let thenEleSel = thenEleSelArr.shift();
                                         let thenUrl = await fetchData.then(r => {
                                             let doc = document.implementation.createHTMLDocument('');
-                                            doc.documentElement.innerHTML = createHTML(r);
+                                            setHTML(doc.documentElement, r, doc);
                                             let ele = getElement(thenEleSel, doc);
                                             if (!ele) return null;
                                             let basepath = doc.querySelector("base");
@@ -12299,7 +12274,7 @@
                                         return r;
                                     }
                                     let doc = document.implementation.createHTMLDocument('');
-                                    doc.documentElement.innerHTML = createHTML(r);
+                                    setHTML(doc.documentElement, r, doc);
                                     title = doc.title;
                                     let finalData = data;
                                     while (template) {
@@ -12540,7 +12515,7 @@
                 this.tips.style.opacity = 0;
                 this.tips.style.display = "none";
                 this.tips.style.transition = "none";
-                this.tips.innerHTML = createHTML("");
+                setHTML(this.tips, "");
                 setTimeout(() => {this.bar.classList.add("initShow");}, 10);
                 let typeSel = "", secondType = "";
                 if (selectStr) {
@@ -13098,7 +13073,7 @@
                 this.waitToRemoveSigns = [];
                 this.waitToAddSigns = [];
                 let selectRect = document.createElement("div");
-                selectRect.innerHTML = createHTML(`
+                setHTML(selectRect, `
                   <div class="dot top-left"></div>
                   <div class="dot top-right"></div>
                   <div class="dot bottom-left"></div>
@@ -13690,7 +13665,7 @@
                     contentEditableParent.dispatchEvent(new InputEvent('beforeinput', {inputType: "insertText", data: v}));
                     await sleep(1);
                     if (input.innerText !== v) {
-                        input.innerHTML = createHTML(v);
+                        setHTML(input, v);
                     }
                 } else {
                     let file = v;
@@ -14014,7 +13989,7 @@
             if (charset) {
                 form.acceptCharset = charset;
             }
-            form.innerHTML = createHTML();
+            setHTML(form, "");
             form.target = target;
             form.action = targetUrl;
             params.forEach((v, k) => {
@@ -15916,7 +15891,7 @@
                 this.filterCssEle = _GM_addStyle(this.filterCss);
                 this.filterFrame = document.createElement("div");
                 this.filterFrame.id = "searchJumperFilter";
-                this.filterFrame.innerHTML = createHTML(`
+                setHTML(this.filterFrame, `
                 <div class="searchJumperFrame-body">
                     <a href="${homePage}" class="searchJumperFrame-title" target="_blank">
                         <img onerror="this.style.display='none'" width="32px" height="32px" src="${logoBase64}" />${i18n("addSearchEngine")}
@@ -16146,7 +16121,7 @@
                 this.typeDict = {};
                 if (!this.filterCssEle || !this.filterCssEle.parentNode) this.filterCssEle = _GM_addStyle(this.filterCss);
                 document.documentElement.appendChild(this.filterFrame);
-                this.sitesCon.innerHTML = createHTML('');
+                setHTML(this.sitesCon, '');
                 configData.forEach(type => {
                     self.anylizeType(type);
                 });
@@ -16352,7 +16327,7 @@
                 dragSiteHistorySpans = [];
                 dragRoundFrame = document.createElement("div");
                 dragRoundFrame.id = "searchJumperWrapper";
-                dragRoundFrame.innerHTML = createHTML(`
+                setHTML(dragRoundFrame, `
                 <div class="panel"></div>
                 <div class="dragLogo">${logoBtnSvg}</div>
                 `);
@@ -16515,7 +16490,7 @@
                 }
             };
             dragSiteCurSpans.forEach((span, i) => {
-                span.innerHTML = createHTML();
+                setHTML(span, "");
                 let targetSite = getTargetSiteBtn();
                 if (!targetSite) {
                     span.parentNode.parentNode.style.filter = 'contrast(0.5)';
@@ -16564,7 +16539,7 @@
             dragSiteHistorySpans.forEach((span, i) => {
                 let dragleaveEvent = new DragEvent("dragleave");
                 span.dispatchEvent(dragleaveEvent);
-                span.innerHTML = createHTML();
+                setHTML(span, "");
                 span.parentNode.parentNode.style.opacity = 0.6;
                 let targetSite = getHistorySiteBtn();
                 if (!targetSite) return;
@@ -16882,7 +16857,7 @@
                 `;
                 let addFrameCssEle = _GM_addStyle(addFrameCssText);
                 addFrame = document.createElement("div");
-                addFrame.innerHTML = createHTML(`
+                setHTML(addFrame, `
                 <div class="searchJumperFrame-body">
                     <a href="${homePage}" class="searchJumperFrame-title" target="_blank" draggable="false">
                         <img width="32px" height="32px" src="${logoBase64}" />${i18n("addSearchEngine")}
@@ -17203,7 +17178,7 @@
                             break;
                     }
                     if (words) {
-                        div.innerHTML = createHTML(words);
+                        setHTML(div, words);
                         div.dataset.type = type;
                         div.dataset.sel = sel;
                         div.dataset.val = val;
@@ -17265,7 +17240,7 @@
                     }
                 };
                 let anylizeEmuUrl = () => {
-                    actionCon.innerHTML = createHTML();
+                    setHTML(actionCon, "");
                     let actionParams = urlInput.value.match(/#p{(.*)}/);
                     if (!actionParams) return;
                     actionParams[1].replace(/([^\\])&/g, "$1SJ^PARAM").split("SJ^PARAM").forEach(pair => {
@@ -17534,7 +17509,7 @@
                 iconShow.style.display = "none";
                 iconShow.src = (/^(showTips:)?https?:/.test(url) ? url.split('\n')[0].replace(/\?.*/, "").replace(/^(showTips:)?(https?:\/\/[^\/]+).*/, '$2') : location.origin) + "/favicon.ico";
             }
-            iconsCon.innerHTML = createHTML();
+            setHTML(iconsCon, "");
             if (icons && icons.length > 1) {
                 iconsCon.style.opacity = "";
                 icons.forEach(iconSrc => {
@@ -18088,7 +18063,6 @@
         var inited = false;
         var checkGlobalIntv, flashTitleIntv, defaultTitle;
         async function init(cb) {
-            await createPolicy();
             if (inited) {
                 if (cb) cb();
                 return;
