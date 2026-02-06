@@ -820,6 +820,11 @@
             parseHTMLToFragment(String(html), fragment, targetDoc);
             return fragment;
         }
+        let canDirectSetHTML = true;
+        let canPolicySetHTML = true;
+        let escapeHTMLPolicy;
+        let escapeHTMLCreator;
+        const MY_POLICY_NAME = 'searchjumper_default';
         const SVG_NS = 'http://www.w3.org/2000/svg';
         const VOID_TAGS = {
             area: true,
@@ -836,6 +841,15 @@
             source: true,
             track: true,
             wbr: true
+        };
+        const RAW_TEXT_TAGS = {
+            script: true,
+            style: true,
+            textarea: true,
+            title: true,
+            xmp: true,
+            plaintext: true,
+            noscript: true
         };
         const HTML_ENTITIES = {
             amp: '&',
@@ -861,7 +875,7 @@
         }
         function parseHTMLToFragment(html, fragment, doc) {
             const stack = [fragment];
-            const tokenRe = /<!--[\s\S]*?-->|<\/?[a-zA-Z][^>]*>|[^<]+/g;
+            const tokenRe = /<!--[\s\S]*?-->|<!doctype[^>]*>|<\/?[a-zA-Z][^>]*>|[^<]+/gi;
             let match;
             while ((match = tokenRe.exec(html))) {
                 const token = match[0];
@@ -871,6 +885,9 @@
                     continue;
                 }
                 if (token.indexOf('<!--') === 0) {
+                    continue;
+                }
+                if (/^<!doctype/i.test(token)) {
                     continue;
                 }
                 if (token[1] === '/') {
@@ -906,13 +923,64 @@
                 const selfClosing = token.endsWith('/>');
                 if (!selfClosing && !VOID_TAGS[tagName]) {
                     stack.push(el);
+                    if (RAW_TEXT_TAGS[tagName]) {
+                        const closeRe = new RegExp('<\\/\\s*' + tagName + '\\s*>', 'ig');
+                        closeRe.lastIndex = tokenRe.lastIndex;
+                        const closeMatch = closeRe.exec(html);
+                        if (closeMatch) {
+                            const rawText = html.slice(tokenRe.lastIndex, closeMatch.index);
+                            if (rawText) el.appendChild(doc.createTextNode(rawText));
+                            tokenRe.lastIndex = closeMatch.index + closeMatch[0].length;
+                            stack.pop();
+                        }
+                    }
                 }
+            }
+        }
+        function ensureEscapeHTMLPolicy() {
+            if (!canPolicySetHTML) return null;
+            if (escapeHTMLCreator) return escapeHTMLPolicy;
+            const createPolicy = _unsafeWindow && _unsafeWindow.trustedTypes && _unsafeWindow.trustedTypes.createPolicy;
+            if (typeof createPolicy !== "function") return (canPolicySetHTML = false, null);
+            try {
+                escapeHTMLPolicy = createPolicy(MY_POLICY_NAME, {
+                    createHTML: (string, sink) => string,
+                    createScriptURL: string => string,
+                    createScript: string => string
+                });
+            } catch (e) {}
+            escapeHTMLCreator = escapeHTMLPolicy && escapeHTMLPolicy.createHTML;
+            if (!escapeHTMLCreator) canPolicySetHTML = false;
+            return escapeHTMLPolicy;
+        }
+        function tryDirectSetHTML(target, htmlStr) {
+            if (!canDirectSetHTML) return false;
+            try {
+                target.innerHTML = htmlStr;
+                return true;
+            } catch (e) {
+                canDirectSetHTML = false;
+                return false;
+            }
+        }
+        function tryPolicySetHTML(target, htmlStr) {
+            if (!canPolicySetHTML) return false;
+            ensureEscapeHTMLPolicy();
+            if (!escapeHTMLCreator) return false;
+            try {
+                target.innerHTML = escapeHTMLCreator(htmlStr);
+                return true;
+            } catch (e) {
+                canPolicySetHTML = false;
+                return false;
             }
         }
         function setHTML(target, html, doc) {
             if (!target) return;
+            const htmlStr = html === null || html === undefined ? '' : String(html);
+            if (tryDirectSetHTML(target, htmlStr) || tryPolicySetHTML(target, htmlStr)) return;
             const targetDoc = doc || target.ownerDocument || document;
-            const fragment = createHTML(html, targetDoc);
+            const fragment = createHTML(htmlStr, targetDoc);
             while (target.firstChild) {
                 target.removeChild(target.firstChild);
             }
